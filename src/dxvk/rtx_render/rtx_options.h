@@ -882,6 +882,11 @@ namespace dxvk {
       RTX_OPTION("rtx.subsurface", Vector2i, diffusionProfileDebugPixelPosition, Vector2i(INT32_MAX, INT32_MAX), "Pixel position where we show debugging sampling positions for diffusion profile. Requires set debug view to 'SSS Diffusion Profile Sampling'.");
     };
 
+    RTX_OPTION("rtx", bool, enablePreTransformedVertices, true,
+               "When enabled, RTX Remix will attempt to ray trace draw calls that use pre-transformed "
+               "(D3DFVF_XYZRHW) vertices by reconstructing a synthetic camera from the D3D9 viewport state. "
+               "This enables path tracing for older games like Red Faction that pre-transform all geometry on the CPU.");
+
     // Alpha Test/Blend Options
     RTX_OPTION("rtx", bool, enableAlphaBlend, true, "Enable rendering alpha blended geometry, used for partial opacity and other blending effects on various surfaces in many games.");
     RTX_OPTION("rtx", bool, enableAlphaTest, true, "Enable rendering alpha tested geometry, used for cutout style opacity in some games.");

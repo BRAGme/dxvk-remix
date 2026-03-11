@@ -303,13 +303,47 @@ namespace dxvk {
   bool D3D9Rtx::processRenderState() {
     DrawCallTransforms& transformData = m_activeDrawCallState.transformData;
 
-    // When games use vertex shaders, the object to world transforms can be unreliable, and so we can ignore them.
-    const bool useObjectToWorldTransform = !m_parent->UseProgrammableVS() || (m_parent->UseProgrammableVS() && useVertexCapture() && useWorldMatricesForShaders());
-    transformData.objectToWorld = useObjectToWorldTransform ? d3d9State().transforms[GetTransformIndex(D3DTS_WORLD)] : Matrix4();
+    if (m_activeDrawCallState.hasPreTransformedVertices) {
+      // For pre-transformed vertices (D3DFVF_XYZRHW), the game has already applied all transforms
+      // to the vertices so they are in screen space. Reconstruct synthetic identity view matrices
+      // and a viewport-derived projection matrix so RTX Remix can find a valid camera.
+      const D3DVIEWPORT9& vp = d3d9State().viewport;
+      transformData.objectToWorld = Matrix4();
+      transformData.worldToView   = Matrix4();
+      transformData.objectToView  = Matrix4();
 
-    transformData.worldToView = d3d9State().transforms[GetTransformIndex(D3DTS_VIEW)];
-    transformData.viewToProjection = d3d9State().transforms[GetTransformIndex(D3DTS_PROJECTION)];
-    transformData.objectToView = transformData.worldToView * transformData.objectToWorld;
+      // Build a matrix that maps screen-space (x, y, z, 1) -> NDC (-1..1, -1..1, 0..1).
+      // D3D9 uses row-vector convention (v * M), so each data[i] is row i.
+      // NDC_x = x * (2/W)  + (-2*X/W - 1)
+      // NDC_y = y * (-2/H) + ( 2*Y/H + 1)
+      // NDC_z = z * (1/(MaxZ-MinZ)) + (-MinZ/(MaxZ-MinZ))
+      const float W        = static_cast<float>(vp.Width  > 0 ? vp.Width  : 1);
+      const float H        = static_cast<float>(vp.Height > 0 ? vp.Height : 1);
+      const float minZ     = vp.MinZ;
+      const float maxZ     = vp.MaxZ;
+      const float invW     = 2.0f / W;
+      const float invH     = 2.0f / H;
+      // When MinZ == MaxZ the depth buffer has no range; collapse Z to a constant (invDepth = 0).
+      const float depthRange = maxZ - minZ;
+      const float invDepth   = (depthRange != 0.0f) ? (1.0f / depthRange) : 0.0f;
+      const float xOffset    = -2.0f * vp.X / W - 1.0f;
+      const float yOffset    =  2.0f * vp.Y / H + 1.0f;
+      const float zOffset    = -minZ * invDepth;
+      transformData.viewToProjection = Matrix4(
+        invW,    0.0f,     0.0f,     0.0f,
+        0.0f,   -invH,     0.0f,     0.0f,
+        0.0f,    0.0f,     invDepth, 0.0f,
+        xOffset, yOffset,  zOffset,  1.0f
+      );
+    } else {
+      // When games use vertex shaders, the object to world transforms can be unreliable, and so we can ignore them.
+      const bool useObjectToWorldTransform = !m_parent->UseProgrammableVS() || (m_parent->UseProgrammableVS() && useVertexCapture() && useWorldMatricesForShaders());
+      transformData.objectToWorld = useObjectToWorldTransform ? d3d9State().transforms[GetTransformIndex(D3DTS_WORLD)] : Matrix4();
+
+      transformData.worldToView = d3d9State().transforms[GetTransformIndex(D3DTS_VIEW)];
+      transformData.viewToProjection = d3d9State().transforms[GetTransformIndex(D3DTS_PROJECTION)];
+      transformData.objectToView = transformData.worldToView * transformData.objectToWorld;
+    }
 
     // Some games pass invalid matrices which D3D9 apparently doesnt care about.
     // since we'll be doing inversions and other matrix operations, we need to 
@@ -491,11 +525,17 @@ namespace dxvk {
       };
     }
 
-    // TODO(REMIX-760): Support reverse engineering pre-transformed vertices
+    // Pre-transformed vertices (D3DFVF_XYZRHW / D3DDECLUSAGE_POSITIONT): when the option is enabled,
+    // allow the draw call through to ray tracing and reconstruct synthetic camera matrices from the
+    // viewport in processRenderState(). When disabled, fall back to rasterization as before.
     if (d3d9State().vertexDecl != nullptr) {
       if (d3d9State().vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT)) {
-        ONCE(Logger::info("[RTX-Compatibility-Info] Skipped drawcall, using pre-transformed vertices which isn't currently supported."));
-        return { RtxGeometryStatus::Rasterized, false };
+        if (!RtxOptions::enablePreTransformedVertices()) {
+          ONCE(Logger::info("[RTX-Compatibility-Info] Skipped drawcall, using pre-transformed vertices which isn't currently supported."));
+          return { RtxGeometryStatus::Rasterized, false };
+        }
+        ONCE(Logger::info("[RTX-Compatibility-Info] Draw call uses pre-transformed vertices; attempting synthetic camera reconstruction from viewport."));
+        m_activeDrawCallState.hasPreTransformedVertices = true;
       }
     }
 
