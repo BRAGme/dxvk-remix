@@ -603,6 +603,10 @@ struct DrawCallState {
   // since it may be world geometry that should go through reprojection instead.
   bool skyAutoDetected = false;
 
+  // Set when draw call uses pre-transformed vertices (D3DFVF_XYZRHW / D3DDECLUSAGE_POSITIONT).
+  // A synthetic view/projection matrix is reconstructed from the D3D9 viewport state in this case.
+  bool hasPreTransformedVertices = false;
+
   void setupCategoriesForTexture();
   void setupCategoriesForGeometry();
   void setupCategoriesForHeuristics(uint32_t prevFrameSeenCamerasCount,
