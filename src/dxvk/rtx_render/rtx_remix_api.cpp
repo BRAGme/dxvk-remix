@@ -728,6 +728,11 @@ namespace {
     // --
 
     CameraType::Enum categoryToCameraType(remixapi_InstanceCategoryFlags flags) {
+      // ViewModel is tested before Sky: an instance carrying both is nonsense, and the
+      // view-model reading is the more specific one.
+      if (flags & REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL) {
+        return CameraType::ViewModel;
+      }
       if (flags & REMIXAPI_INSTANCE_CATEGORY_BIT_SKY) {
         return CameraType::Sky;
       }
@@ -762,6 +767,12 @@ namespace {
       if (flags & REMIXAPI_INSTANCE_CATEGORY_BIT_PARTICLE_EMITTER)         { result.set(InstanceCategories::ParticleEmitter); }
       if (flags & REMIXAPI_INSTANCE_CATEGORY_BIT_SMOOTH_NORMALS)           { result.set(InstanceCategories::SmoothNormals); }
       
+      // Two published bits are intentionally absent from the mapping above:
+      //   VIEW_MODEL  - internally a CameraType, not a category. categoryToCameraType()
+      //                 consumes it; there is deliberately no InstanceCategories::ViewModel.
+      //   HAIR_CARDS  - upstream-allocated (bit 25) but not implemented by this runtime,
+      //                 so there is no InstanceCategories::HairCards to map it onto.
+      // Neither participates in the count below, which is why it stays at 25.
       static_assert((int)InstanceCategories::Count == 25, "Instance categories changed, please update Remix SDK");
       return result;
     }
@@ -884,9 +895,25 @@ namespace {
 
 dxvk::ExternalDrawState dxvk::RemixAPIPrivateAccessor::toRtDrawState(const remixapi_InstanceInfo& info)
 {
+  const CameraType::Enum cameraType = convert::categoryToCameraType(info.categoryFlags);
+
   auto prototype = DrawCallState {};
   {
-    prototype.cameraType = CameraType::Main;
+    // ViewModel has to reach DrawCallState, not just ExternalDrawState: InstanceManager::
+    // preserveInstance registers a view-model candidate on drawCall.cameraType ==
+    // CameraType::ViewModel and nothing else, so without this an instance tagged
+    // VIEW_MODEL never enters the candidate list and createViewModelInstances() has
+    // nothing to iterate.
+    //
+    // Sky is deliberately held back at Main. On the D3D9 path a sky draw is rasterized
+    // into the sky cubemap by RtxContext::tryHandleSky() and the instance is then hidden
+    // from the raytraced world pass (rtx_instance_manager.cpp, "Hide the sky instance
+    // since it is not raytraced"). External draws never reach tryHandleSky() — it is only
+    // called from the D3D9 raster path — so promoting them to CameraType::Sky here would
+    // hide the instance with nothing left to draw it. ExternalDrawState::cameraType below
+    // still resolves to CameraType::Sky, and that is the half that matters for sky: it is
+    // what selects the sky camera's matrices in SceneManager::submitExternalDraw.
+    prototype.cameraType = (cameraType == CameraType::Sky) ? CameraType::Main : cameraType;
     prototype.transformData.objectToWorld = convert::tomat4(info.transform);
     prototype.transformData.textureTransform = Matrix4 {};
     prototype.transformData.texgenMode = TexGenMode::None;
@@ -957,7 +984,7 @@ dxvk::ExternalDrawState dxvk::RemixAPIPrivateAccessor::toRtDrawState(const remix
   return ExternalDrawState {
     prototype,
     info.mesh,
-    convert::categoryToCameraType(info.categoryFlags),
+    cameraType,
     convert::toRtCategories(info.categoryFlags),
     convert::tobool(info.doubleSided),
     optParticles,

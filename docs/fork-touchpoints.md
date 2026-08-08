@@ -82,7 +82,7 @@ check will enforce it if discipline slips.
 **Category:** migrate
 
 - **Block** at `REMIXAPI_VERSION_MAJOR/MINOR/PATCH` (file scope) — ~3 LOC, planned target `N/A (public header)` in `N/A (public header)`.
-  *Sets the Remix Plus ABI version to `0.1000.0` (reserved MINOR `1000`), distinct from stock NVIDIA `0.6.x`. Because `isVersionCompatible` treats each minor as breaking while MAJOR==0, this makes the runtime reject binaries built against stock Remix `0.6.x` or older Remix Plus `0.6.x` — whose `remixapi_Interface` layout and category-bit ABI differ. Bump MINOR on any further breaking ABI change.*
+  *Sets the Remix Plus ABI version to `0.1000.1` (reserved MINOR `1000`), distinct from stock NVIDIA `0.6.x`. Because `isVersionCompatible` treats each minor as breaking while MAJOR==0, this makes the runtime reject binaries built against stock Remix `0.6.x` or older Remix Plus `0.6.x` — whose `remixapi_Interface` layout and category-bit ABI differ. Bump MINOR on any further breaking ABI change. PATCH bumped to `1` on 2026-08-08 for the additive `VIEW_MODEL` / `HAIR_CARDS` category bits; PATCH is ignored by the compat check, so `0.1000.0` consumers keep working.*
 
 - **Block** at `remixapi_StructType` enum (file scope) — ~3 LOC, planned target `N/A (public header)` in `N/A (public header)`.
   *Adds `REMIXAPI_STRUCT_TYPE_TEXTURE_INFO`, `INSTANCE_INFO_PARTICLE_SYSTEM_EXT`, and `INSTANCE_INFO_GPU_INSTANCING_EXT` enumerators.*
@@ -92,6 +92,8 @@ check will enforce it if discipline slips.
 
 - **Block** at `REMIXAPI_INSTANCE_CATEGORY_BIT_*` enum (file scope) — ~16 LOC, planned target `N/A (public header)` in `N/A (public header)`.
   *Bit values match upstream NVIDIA exactly (reverted 2026-06-27 from an earlier fork build that shifted `IGNORE_ALPHA_CHANNEL` to bit 8 to mirror the internal `InstanceCategories` order). The C↔internal mapping in `toRtCategories()` is by-name, so the public bit values are free to match upstream and now do. No remaining fork delta — the enum now matches upstream exactly. (The misleadingly-named `LEGACY_EMISSIVE` alias of bit 24 / `SMOOTH_NORMALS` was removed 2026-06-28: its name implied emissive behavior but it routed to `SmoothNormals`, so callers got a silent wrong-category result; removing it converts that into a compile error.)*
+
+  *2026-08-08: added `REMIXAPI_INSTANCE_CATEGORY_BIT_HAIR_CARDS` (bit 25) and `REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL` (bit 26), restoring parity with upstream and with the `remix-plus-1.5.1` tag. `HAIR_CARDS` is upstream-allocated (REMIX-2901) and declared **reserved-but-unimplemented** here — this branch has no `InstanceCategories::HairCards`, so `toRtCategories()` drops it. It is declared anyway so bit 25 stays claimed: taking it for `VIEW_MODEL` (the naive "next free bit") would have collided with upstream on the next sync and silently misrouted. `VIEW_MODEL` is the one category bit with no internal-category counterpart by design — it routes to `CameraType::ViewModel` in `categoryToCameraType()` instead.*
 
 - **Block** at `IDirect3DTexture9` forward declaration (file scope) — ~1 LOC, planned target `N/A (public header)` in `N/A (public header)`.
   *Forward-declares `IDirect3DTexture9` so the dxvk-extension function signatures compile without pulling in d3d9 headers.*
@@ -661,6 +663,9 @@ initializer list and can't be lifted into a separate TU.
 
 - **Hook** at `(anonymous namespace)` `remixapi_AddTextureHash` / `remixapi_RemoveTextureHash` → `fork_hooks::mutateTextureHashOption` in `rtx_fork_api_entry.cpp` (migrated 2026-04-18, migration #7a).
   *Looks up an `RtxOption<fast_unordered_set>` by full option name and adds or removes a hash via the user config layer. Call sites acquire `s_mutex` then delegate to the hook (which internally takes the RtxOption update mutex — lock order documented alongside `s_mutex`). The call-site signature replaced the local `TextureHashMutation` enum with a plain `bool add` parameter.*
+
+- **Inline tweak** at `convert::categoryToCameraType` + `convert::toRtDrawState` (view-model camera routing) — 3 LOC across two sites, not worth a hook. Not migrated.
+  *`categoryToCameraType` gains a `REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL` → `CameraType::ViewModel` arm (tested before `SKY`), and `toRtDrawState` hoists the resolved camera type into a local and assigns it to `prototype.cameraType` in place of the hardcoded `CameraType::Main`. The `DrawCallState` assignment is the load-bearing half: `InstanceManager::preserveInstance` registers a view-model candidate on `drawCall.cameraType == CameraType::ViewModel` and nothing else, so `ExternalDrawState::cameraType` alone (which only selects camera matrices in `submitExternalDraw`) left the candidate list permanently empty. `Sky` is deliberately clamped back to `Main` for `prototype.cameraType` — external draws never reach `RtxContext::tryHandleSky()` (D3D9-raster-path only), so promoting them would hide the instance with nothing left to rasterize it; this is a deliberate divergence from the `remix-plus-1.5.1` tag, which routes `Sky` through unconditionally.*
 
 - **Inline tweak** at `convert::toRtDrawState` (skinning hash computation) — 1 LOC, not worth a hook. Not migrated.
   *Calls `skinningData.computeHash()` on the prototype after building skinning data so the skinning hash participates in geometry deduplication.*

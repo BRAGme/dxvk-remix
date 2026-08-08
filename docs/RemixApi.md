@@ -270,6 +270,39 @@ The full list of category bits is `remixapi_InstanceCategoryBit` in the
 header. Most plugins only need `WORLD_MATTE`, `SKY`, `PARTICLE`, the
 decal bits, and the `IGNORE_*` modifiers.
 
+Two bits behave differently from the rest and are worth calling out:
+
+- **`REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL`** (bit 26) — tags the
+  first-person arms/weapon. It is the only category bit that does not
+  become an internal instance category; instead it selects
+  `CameraType::ViewModel` for the draw, which is what puts the instance
+  into the view-model pass (rendered with its own FOV and depth-biased so
+  it cannot clip into world geometry). Tagging alone is not enough — see
+  [View-model instances](#view-model-instances) below.
+- **`REMIXAPI_INSTANCE_CATEGORY_BIT_HAIR_CARDS`** (bit 25) — reserved.
+  The bit is allocated upstream and declared here so the value stays
+  claimed, but this runtime does not implement it. Setting it is
+  accepted and ignored.
+
+### View-model instances
+
+Getting first-person arms/weapons to render through the view-model pass
+takes three things together. Any one missing and the instances silently
+fall back to ordinary world geometry:
+
+1. **Tag the instances.** Set
+   `REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL` in
+   `remixapi_InstanceInfo::categoryFlags` on every view-model draw.
+2. **Submit a view-model camera every frame.** Call `SetupCamera` with
+   `REMIXAPI_CAMERA_TYPE_VIEW_MODEL` in addition to the world camera. The
+   pass is skipped outright while that camera is invalid, and it is not
+   synthesized from the world camera — it builds its perspective
+   correction from *both*, taking FOV from the view-model projection and
+   the near/far planes from the world one. Submit the real FOV and near
+   plane the title uses for its view model.
+3. **Enable the pass.** `rtx.viewModel.enable = True` in `rtx.conf`. It
+   defaults to `False`.
+
 ---
 
 ## Lights

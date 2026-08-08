@@ -79,3 +79,38 @@ between them. Rebuild plugins/hosts against this header.
   Source-only break — the bit layout, enum size, and struct offsets are unchanged
   (bit 24 still exists as `SMOOTH_NORMALS`), so no binary/ABI change and the
   `0.1000.0` version line is unaffected.
+
+
+## [0.1000.1] — 2026-08-08
+
+Additive only: two new `remixapi_InstanceCategoryBit` enumerators. No struct
+layout, enum size, or function-pointer offset changes, and the compat check
+ignores PATCH while MAJOR is 0 — so binaries built against `0.1000.0` keep
+working and no consumer rebuild is required. Rebuild only to use the new bits.
+
+### Added
+- `REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL` (bit 26) — tags first-person
+  arms/weapon instances so they render through the view-model pass. Previously
+  the API had no way to express this at all: `DrawInstance` hardcoded
+  `CameraType::Main` on every external draw, so `REMIXAPI_CAMERA_TYPE_VIEW_MODEL`
+  could be submitted but no instance could ever reference it. This is the only
+  category bit that does not map to an internal instance category — it selects
+  `CameraType::ViewModel` for the draw instead.
+
+  Tagging alone is not sufficient. The pass additionally requires a
+  `REMIXAPI_CAMERA_TYPE_VIEW_MODEL` camera submitted every frame (it is not
+  synthesized — the perspective correction is built from both that camera and the
+  world camera) and `rtx.viewModel.enable = True`, which defaults to `False`.
+  See [View-model instances](RemixApi.md#view-model-instances).
+- `REMIXAPI_INSTANCE_CATEGORY_BIT_HAIR_CARDS` (bit 25) — **reserved, not
+  implemented.** Allocated by upstream NVIDIA (REMIX-2901). Declared here so the
+  bit stays claimed and this enum matches upstream byte-for-byte; without it the
+  fork's next-free-bit would have collided with upstream on the next sync.
+  Setting it is accepted and ignored.
+
+### Changed
+- `REMIXAPI_VERSION` is now `0.1000.1` (was `0.1000.0`).
+
+### Fixed
+
+### Removed
