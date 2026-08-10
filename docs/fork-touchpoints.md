@@ -140,6 +140,53 @@ check will enforce it if discipline slips.
 
 ---
 
+## src/d3d9/d3d9_common_texture.cpp
+
+**Fork footprint:** +71 / -6 LOC (added 2026-08-10)
+
+**Category:** index-only
+
+**Rationale:** All three changes are edits inside existing upstream member functions (`SetupForRtxFrom`, `CreateView`, `CreateSampleView`) plus one small new member. They read and write private members (`m_image`, `m_buffers`, `m_mappedSlices`, `m_sampleView`) and cannot be lifted out without exposing that state.
+
+- **Inline tweak** at `D3D9CommonTexture::SetupForRtxFrom` (hash source) — ~14 LOC.
+  *Hashes the slice returned by `GetMappedSlice(subresource)` rather than `m_buffers[subresource]->mapPtr(0)`. `D3DUSAGE_DYNAMIC` textures locked with `D3DLOCK_DISCARD` are renamed by `DiscardMapSlice()`, so after the first discard the live pixels are no longer at the buffer base — `FlushImage` already uploads from the mapped slice, and hashing the base derived texture identity from stale memory. Games that upload once are unaffected: their mapped slice IS the base slice.*
+
+- **Inline tweak** at `D3D9CommonTexture::SetupForRtxFrom` (early-out) — ~16 LOC.
+  *Honours `rtx.rehashTextureOnUpload`: re-derives the content hash on every full upload instead of once per D3D9 texture object, releasing the stale ImGUI entry and early-outing when the content is unchanged. Needed for emulators, whose texture caches recycle a small pool of texture objects.*
+
+- **Inline tweak** at `D3D9CommonTexture::CreateView` (swizzle) — ~14 LOC.
+  *New `SwapRedBlue` parameter (default false) exchanges the red and blue entries of the view's component mapping, resolving `VK_COMPONENT_SWIZZLE_IDENTITY` first so the swap composes with any swizzle the format already carries.*
+
+- **Inline tweak** at `D3D9CommonTexture::CreateSampleView` — ~5 LOC.
+  *Records the LOD the sample views were built from and invalidates `m_rtxSwizzledView`, which is derived from them.*
+
+- **Block** at `D3D9CommonTexture::GetRtxSampleView` (new member) — ~19 LOC, planned target `N/A (member of upstream class)`.
+  *Lazily builds and caches an R/B-swapped sample view for raytraced materials when `rtx.swapTextureRedBlue` is set; returns the ordinary sample view otherwise, so it is a no-op by default. Kept separate from `m_sampleView` so rasterization, the texture browser and hashing keep seeing the unmodified texture.*
+
+---
+
+## src/d3d9/d3d9_common_texture.h
+
+**Fork footprint:** +18 / -2 LOC (added 2026-08-10)
+
+**Category:** index-only
+
+**Rationale:** Member declarations and a defaulted parameter on an existing private method — structurally part of the class definition, nothing to extract.
+
+- **Inline tweak** at `D3D9CommonTexture` (GetRtxSampleView declaration) — ~10 LOC.
+  *Declares the raytracing-only sample view accessor. See the `.cpp` entry.*
+
+- **Inline tweak** at `D3D9CommonTexture` (members) — ~4 LOC.
+  *Adds `m_rtxSwizzledView` (lazily built R/B-swapped counterpart of `m_sampleView`) and `m_sampleViewLod` (the LOD it must be rebuilt from).*
+
+- **Inline tweak** at `D3D9CommonTexture::CreateView` (signature) — ~1 LOC.
+  *Adds a defaulted `bool SwapRedBlue = false` parameter; all existing call sites are unchanged.*
+
+- **Inline tweak** at `D3D9CommonTexture::GetMappedSlice` — ~1 LOC.
+  *Const-qualified so `SetupForRtxFrom`, which takes a `const D3D9CommonTexture*` source, can read the mapped slice. Returns by value and mutates nothing.*
+
+---
+
 ## src/d3d9/d3d9_device.cpp
 
 **Pre-refactor fork footprint:** +5 / -5 LOC (audit 2026-04-18)
@@ -159,6 +206,31 @@ check will enforce it if discipline slips.
 
 - **Inline tweak** at `D3D9Rtx::EndFrame` (~line 1216) — 5-line addition for [RTX-Diag] entry log on EndFrame.
   *Logs targetImage pointer and callInjectRtx flag at the top of EndFrame, plus a second log after the CS lambda is emitted, to trace the frame-end dispatch chain.*
+
+- **Inline tweak** at `D3D9Rtx::internalPrepareDraw` (frontFace) — ~1 LOC.
+  *`geoData.frontFace` honours `rtx.flipFrontFace` instead of being hardcoded to `VK_FRONT_FACE_CLOCKWISE`. Remix detects inverted winding from `viewToProjection * worldToView`, which cannot see a mirror living in the per-object transform — the case for fused world-view games and for emulators whose projection flips Y.*
+
+- **Inline tweak** at `D3D9Rtx::prepareVertexCapture` (texcoord source) — ~1 LOC.
+  *Adds `alwaysCaptureTexcoords()` to the condition selecting the captured vertex-shader-output texcoord, so it can be preferred even when the raw input buffer has a valid format. Needed when the vertex shader is what makes the UVs final (PPSSPP applies the PSP's uvscale/offset, texture matrix and through-mode scaling there).*
+
+- **Inline tweak** at `D3D9Rtx::processTextures` (material texture view) — ~3 LOC.
+  *Takes `colorTextures[textureID]` from `GetRtxSampleView(srgb)` rather than `GetSampleView(srgb)`, so `rtx.swapTextureRedBlue` applies to raytraced materials only. A no-op when that option is off.*
+
+---
+
+## src/d3d9/d3d9_rtx.h
+
+**Fork footprint:** +4 / -0 LOC (added 2026-08-10)
+
+**Category:** index-only
+
+**Rationale:** `RTX_OPTION` macro declarations inside the `D3D9Rtx` class body; they expand to inline static member declarations and cannot be lifted into a separate TU.
+
+- **Inline tweak** at `D3D9Rtx` class body (flipFrontFace) — ~2 LOC.
+  *Declares `RTX_OPTION("rtx", bool, flipFrontFace, false, ...)`. Consumed in `d3d9_rtx.cpp` when setting `geoData.frontFace`.*
+
+- **Inline tweak** at `D3D9Rtx` class body (alwaysCaptureTexcoords) — ~2 LOC.
+  *Declares `RTX_OPTION("rtx", bool, alwaysCaptureTexcoords, false, ...)`. Consumed in `prepareVertexCapture`.*
 
 ---
 
@@ -555,6 +627,12 @@ initializer list and can't be lifted into a separate TU.
 
 - **Inline tweak** at `RtxOptions` class body (skyMode RTX_OPTION) — ~2 LOC.
   *Declares `RTX_OPTION("rtx", SkyMode, skyMode, SkyMode::SkyboxRasterization, ...)` immediately after the existing sky-related options block. Consumed by `fork_hooks::updateAtmosphereConstants` in `rtx_fork_atmosphere.cpp`.*
+
+- **Inline tweak** at `RtxOptions` class body (swapTextureRedBlue RTX_OPTION) — ~4 LOC.
+  *Declares `RTX_OPTION("rtx", bool, swapTextureRedBlue, false, ...)`, placed beside `useObsoleteHashOnTextureUpload`. Consumed by `D3D9CommonTexture::GetRtxSampleView`. Needed when a game uploads textures in a channel order D3D9 has no format for and corrects it in its pixel shader — Remix replaces that shader, so it never sees the correction.*
+
+- **Inline tweak** at `RtxOptions` class body (rehashTextureOnUpload RTX_OPTION) — ~5 LOC.
+  *Declares `RTX_OPTION("rtx", bool, rehashTextureOnUpload, false, ...)`. Consumed by `D3D9CommonTexture::SetupForRtxFrom` to re-derive a texture's content hash on every full upload, for caches that recycle D3D9 texture objects.*
 
 - **Inline tweak** at `RtxOptions` class body (atmosphere RTX_OPTIONs block) — ~25 LOC for the original 17 options + ~5 LOC for night-sky + ~52 LOC for the `DECLARE_MOON_OPTIONS(N)` macro and 4 invocations + ~11 LOC for the cloud block + ~13 LOC for the cloud-enhancement block (including `cloudVerticalProfile`, `cloudCurvature`). Sun/star position fields (`sunElevation`, `sunRotation`, `starBrightness`, `starRotation`) and per-moon pose fields (`elevationN`, `rotationN`, `phaseN`) are game-drivable per-frame but persist when saved (runtime push is the last writer; cold start uses the saved value until any push lands). Cloud defaults tuned from artist iteration.
   *Declares the original 17 atmosphere tuning options under the `rtx.atmosphere` prefix (`sunDisc`, `sunSize`, `sunIntensity`, `sunElevation`, `sunRotation`, `altitude`, `airDensity`, `aerosolDensity`, `ozoneDensity`, `planetRadius`, `atmosphereThickness`, `mieAnisotropy`, `rayleighScattering`, `mieScattering`, `ozoneAbsorption`, `ozoneLayerAltitude`, `ozoneLayerWidth`, `sunIlluminance`), plus the night-sky block (`starBrightness`, `starDensity`, `starTwinkleSpeed`, `nightSkyBrightness`, `nightSkyColor`), plus a per-moon block declared via the `DECLARE_MOON_OPTIONS(N)` macro for `N` in `0..MAX_MOONS-1` (each block: `enabledN`, `angularRadiusN`, `brightnessN`, `colorN`, `surfaceStyleN`, `craterDensityN`, `surfaceContrastN`, `surfaceNoiseScaleN`, `darkSideBrightnessN`, `roughnessAmountN`, plus pose fields `elevationN`/`rotationN`/`phaseN`), plus a cloud block (`cloudEnabled`, `cloudDensity`, `cloudAltitude`, `cloudScale`, `cloudColor`, `cloudWindSpeed`, `cloudWindDirection`, `cloudShadowStrength`, `cloudAnisotropy`, plus NoSave-flagged `cloudCoverage` for game-driven weather), plus a cloud-enhancement block (`cloudViewSamples`, `cloudThickness`, `cloudDetailWeight`, `cloudShadowTint`, `cloudShadowTintStrength`, `cloudSunsetWarmth`, `cloudVariance`, `cloudVarianceScale`, `cloudVerticalProfile`, `cloudCurvature`) for volumetric ray-march tuning, color polish, vertical-shape character, and sky-dome curvature. All consumed by `RtxAtmosphere::getAtmosphereArgs()` and the atmosphere UI hook in `rtx_fork_atmosphere.cpp`.*
@@ -1133,6 +1211,22 @@ initializer list and can't be lifted into a separate TU.
 
 - **Inline tweak** at `(file scope)` (~line 66) — 1-line addition.
   *Adds `#define ATMOSPHERE_AVAILABLE` so the indirect miss shader can evaluate atmosphere sky radiance on rays that miss all geometry.*
+
+---
+
+## src/dxvk/shaders/rtx/pass/interleave_geometry.h
+
+**Fork footprint:** +9 / -0 LOC (added 2026-08-10)
+
+**Category:** index-only
+
+**Rationale:** Two cases added to existing `switch` statements inside upstream shader helper functions; there is no hook boundary in a header-only shader include.
+
+- **Inline tweak** at `interleaver::formatConversionUintSupported` — ~1 LOC.
+  *Accepts `VK_FORMAT_R8G8B8A8_UNORM` for colour0. PPSSPP emits vertex colours in that format (VkFormat 37); the interleaver previously accepted only `B8G8R8A8_UNORM` and silently dropped them, logging `[rtx-interleaver] Unsupported color0 buffer format (37), skipping color0`.*
+
+- **Inline tweak** at the colour unpack path — ~8 LOC.
+  *Unpacks `R8G8B8A8_UNORM` by swizzling R and B relative to the existing `B8G8R8A8_UNORM` case, since the interleaver's output colour slot is tagged `B8G8R8A8_UNORM` unconditionally in `rtx_geometry_utils.cpp`. `RasterGeometry::areFormatsGpuFriendly()` still rejects the format for the raw passthrough copy, so this path is what such geometry actually takes.*
 
 ---
 

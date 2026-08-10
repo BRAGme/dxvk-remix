@@ -2339,6 +2339,16 @@ namespace dxvk {
                "Whether or not to use slower XXH64 hash on texture upload.\n"
                "New projects should not enable this option as this solely exists for compatibility with older hashing schemes.");
 
+    RTX_OPTION("rtx", bool, swapTextureRedBlue, false,
+               "Sample game textures with their red and blue channels exchanged, using a dedicated image view so the game's own rasterization and the texture browser are unaffected.\n"
+               "Needed when a game uploads textures in a channel order D3D9 has no format for and corrects it inside its pixel shader. Remix replaces the pixel shader, so it never sees that correction and every non-neutral texture comes out with red and blue transposed - desert tan reads as blue, rust reads as teal, while greys look fine.\n"
+               "This is common in emulators: PPSSPP declares PSP BGR5650 data as D3DFMT_R5G6B5 (D3D9 has no B-high 565 format) and flips the channels in the shader - see the comment at the top of its TextureCacheDX9.cpp. Leave disabled for games that upload textures in the order they declare.");
+
+    RTX_OPTION("rtx", bool, rehashTextureOnUpload, false,
+               "Recompute a texture's content hash every time the game uploads a full new image into it, instead of hashing once and keeping that identity for the lifetime of the D3D9 texture object.\n"
+               "Normal games allocate one texture per asset and upload it once, so the default (hash once) is correct and cheaper. Emulators do the opposite: they run a texture cache that recycles a small pool of D3D9 texture objects and streams different guest textures through them. With the default, Remix keeps serving the material it cached under whatever content happened to land there first, so materials visibly swap between surfaces as the emulator reuses slots.\n"
+               "Costs one XXH3 pass over the staging buffer per full upload. Enable for emulators; leave disabled otherwise.");
+
     RTX_OPTION("rtx", uint32_t, applicationId, 102100511, "Used to uniquely identify the application to DLSS. Generally should not be changed without good reason.");
 
     static RtxOptions* s_instance;

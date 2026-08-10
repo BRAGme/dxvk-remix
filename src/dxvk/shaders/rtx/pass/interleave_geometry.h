@@ -69,6 +69,7 @@ namespace interleaver {
   bool formatConversionUintSupported(uint32_t format) {
     switch (format) {
     case SupportedVkFormats::VK_FORMAT_B8G8R8A8_UNORM:
+    case SupportedVkFormats::VK_FORMAT_R8G8B8A8_UNORM:
       return true;
     default:
       return false;
@@ -115,6 +116,14 @@ namespace interleaver {
     case SupportedVkFormats::VK_FORMAT_B8G8R8A8_UNORM:
       // Passthrough format we support in other places
       return uint3(input[index], 0, 0);
+    case SupportedVkFormats::VK_FORMAT_R8G8B8A8_UNORM:
+    {
+      // Same four 8-bit channels as the passthrough above, but R and B are
+      // swapped in memory (byte0=R here, byte0=B there). Swizzle them so the
+      // packed word downstream stays B8G8R8A8-ordered. G and A keep their slots.
+      uint data = input[index];
+      return uint3((data & 0xFF00FF00u) | ((data >> 16u) & 0xFFu) | ((data & 0xFFu) << 16u), 0, 0);
+    }
     }
     return uint3(1,1,1);
   }

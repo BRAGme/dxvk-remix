@@ -158,7 +158,7 @@ namespace dxvk {
     }
 
 
-    DxvkBufferSliceHandle GetMappedSlice(UINT Subresource) {
+    DxvkBufferSliceHandle GetMappedSlice(UINT Subresource) const {
       return m_mappedSlices[Subresource];
     }
 
@@ -353,6 +353,16 @@ namespace dxvk {
       return m_sampleView.Pick(srgb && IsSrgbCompatible());
     }
 
+    /**
+     * \brief Sample view for raytraced materials
+     *
+     * Same image as GetSampleView, but honours rtx.swapTextureRedBlue by
+     * exchanging the red and blue channels in a separate, lazily created view.
+     * Kept apart from m_sampleView so the game's rasterization, the texture
+     * browser and hashing all keep seeing the unmodified texture.
+     */
+    const Rc<DxvkImageView>& GetRtxSampleView(bool srgb);
+
     VkImageLayout DetermineRenderTargetLayout() const {
       return m_image != nullptr &&
              m_image->info().tiling == VK_IMAGE_TILING_OPTIMAL &&
@@ -380,7 +390,8 @@ namespace dxvk {
             UINT                   Layer,
             UINT                   Lod,
             VkImageUsageFlags      UsageFlags,
-            bool                   Srgb);
+            bool                   Srgb,
+            bool                   SwapRedBlue = false);
     D3D9SubresourceBitset& GetUploadBitmask() { return m_needsUpload; }
 
     void SetAllNeedUpload() {
@@ -504,6 +515,11 @@ namespace dxvk {
     bool                          m_hazardous = false;
 
     D3D9ColorView                 m_sampleView;
+
+    // Lazily built R/B-swapped counterpart of m_sampleView, used only by the
+    // raytracing material path when rtx.swapTextureRedBlue is enabled.
+    D3D9ColorView                 m_rtxSwizzledView;
+    UINT                          m_sampleViewLod = 0;
 
     D3D9SubresourceBitset         m_locked = { };
 

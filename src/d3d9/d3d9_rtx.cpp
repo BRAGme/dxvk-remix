@@ -192,7 +192,7 @@ namespace dxvk {
     assert(geoData.positionBuffer.offset() % 4 == 0);
 
     // Did we have a texcoord buffer bound for this draw?  Note, we currently get texcoord from the vertex shader output 
-    if (BoundShaderHas(vertexShader, DxsoUsage::Texcoord, false) && (!geoData.texcoordBuffer.defined() || !RtxGeometryUtils::isTexcoordFormatValid(geoData.texcoordBuffer.vertexFormat()))) {
+    if (BoundShaderHas(vertexShader, DxsoUsage::Texcoord, false) && (alwaysCaptureTexcoords() || !geoData.texcoordBuffer.defined() || !RtxGeometryUtils::isTexcoordFormatValid(geoData.texcoordBuffer.vertexFormat()))) {
       // Known offset for vertex capture buffers
       const uint32_t texcoordOffset = offsetof(CapturedVertex, texcoord0);
       geoData.texcoordBuffer = RasterBuffer(slice, texcoordOffset, stride, VK_FORMAT_R32G32_SFLOAT);
@@ -619,7 +619,7 @@ namespace dxvk {
     RasterGeometry& geoData = m_activeDrawCallState.geometryData;
     geoData = {};
     geoData.cullMode = DecodeCullMode(D3DCULL(d3d9State().renderStates[D3DRS_CULLMODE]));
-    geoData.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    geoData.frontFace = flipFrontFace() ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
     geoData.topology = DecodeInputAssemblyState(drawContext.PrimitiveType).primitiveTopology;
 
     // This can be negative!!
@@ -1085,7 +1085,9 @@ namespace dxvk {
 
       // Cache the slot we want to bind
       const bool srgb = d3d9State().samplerStates[stage][D3DSAMP_SRGBTEXTURE] & 0x1;
-      m_activeDrawCallState.materialData.colorTextures[textureID] = TextureRef(pTexInfo->GetSampleView(srgb));
+      // GetRtxSampleView honours rtx.swapTextureRedBlue; it returns the ordinary
+      // sample view when that option is off, so this is a no-op by default.
+      m_activeDrawCallState.materialData.colorTextures[textureID] = TextureRef(pTexInfo->GetRtxSampleView(srgb));
       m_activeDrawCallState.materialData.samplers[textureID] = sampler;
 
       auto shaderSampler = RemapStateSamplerShader(stage);

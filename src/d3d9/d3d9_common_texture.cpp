@@ -571,7 +571,8 @@ namespace dxvk {
           UINT                   Layer,
           UINT                   Lod,
           VkImageUsageFlags      UsageFlags,
-          bool                   Srgb) {    
+          bool                   Srgb,
+          bool                   SwapRedBlue) {
     DxvkImageViewCreateInfo viewInfo;
     viewInfo.format    = m_mapping.ConversionFormatInfo.FormatColor != VK_FORMAT_UNDEFINED
                        ? PickSRGB(m_mapping.ConversionFormatInfo.FormatColor, m_mapping.ConversionFormatInfo.FormatSrgb, Srgb)
@@ -598,6 +599,22 @@ namespace dxvk {
     if (UsageFlags == VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
       viewInfo.swizzle = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                            VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+
+    // Exchange red and blue for the raytracing-only view. The mapping is
+    // output-component -> source-component, so swapping the r and g entries of
+    // whatever swizzle the format already carries composes correctly rather
+    // than discarding it. IDENTITY has to be resolved first or the swap is a
+    // no-op, since IDENTITY means "this component" and would still mean "this
+    // component" after being moved.
+    if (SwapRedBlue) {
+      auto resolve = [](VkComponentSwizzle s, VkComponentSwizzle identity) {
+        return s == VK_COMPONENT_SWIZZLE_IDENTITY ? identity : s;
+      };
+      const VkComponentSwizzle r = resolve(viewInfo.swizzle.r, VK_COMPONENT_SWIZZLE_R);
+      const VkComponentSwizzle b = resolve(viewInfo.swizzle.b, VK_COMPONENT_SWIZZLE_B);
+      viewInfo.swizzle.r = b;
+      viewInfo.swizzle.b = r;
+    }
 
     // Create the underlying image view object
     return m_device->GetDXVKDevice()->createImageView(GetImage(), viewInfo);
@@ -640,6 +657,11 @@ namespace dxvk {
     if (IsSrgbCompatible())
       m_sampleView.Srgb = CreateView(AllLayers, Lod, VK_IMAGE_USAGE_SAMPLED_BIT, true);
 
+    // The RTX view is derived from these, so it has to be rebuilt alongside them.
+    m_sampleViewLod = Lod;
+    m_rtxSwizzledView.Color = nullptr;
+    m_rtxSwizzledView.Srgb = nullptr;
+
     // Add render target texture to GUI
     if (IsRenderTarget()) {
       // Assumption: All image hashes are created before creating sample view. Put assert here to track hash bugs.
@@ -647,6 +669,26 @@ namespace dxvk {
       ImGUI::AddTexture(m_image->getHash(), m_sampleView.Color, ImGUI::kTextureFlagsDefault);
       ImGUI::AddTexture(m_image->getDescriptorHash(), m_sampleView.Color, ImGUI::kTextureFlagsRenderTarget);
     }
+  }
+
+  const Rc<DxvkImageView>& D3D9CommonTexture::GetRtxSampleView(bool srgb) {
+    const bool useSrgb = srgb && IsSrgbCompatible();
+
+    if (!RtxOptions::swapTextureRedBlue()) {
+      return m_sampleView.Pick(useSrgb);
+    }
+
+    // Nothing to derive from (e.g. SYSTEMMEM, where CreateSampleView is a no-op).
+    if (m_sampleView.Pick(useSrgb) == nullptr) {
+      return m_sampleView.Pick(useSrgb);
+    }
+
+    Rc<DxvkImageView>& swizzled = useSrgb ? m_rtxSwizzledView.Srgb : m_rtxSwizzledView.Color;
+    if (swizzled == nullptr) {
+      swizzled = CreateView(AllLayers, m_sampleViewLod, VK_IMAGE_USAGE_SAMPLED_BIT, useSrgb, true);
+    }
+
+    return swizzled;
   }
 
   void D3D9CommonTexture::SetupForRtxFrom(const D3D9CommonTexture* source) {
@@ -658,10 +700,20 @@ namespace dxvk {
     if (m_type != D3DRTYPE_TEXTURE || (m_desc.Usage & D3DUSAGE_DEPTHSTENCIL))
       return;
 
-    if (m_image->getHash() != 0) {
-      // Already setup.
+    // Normally a texture's identity is established once and kept for the life of
+    // the D3D9 object. Emulators break that assumption: their texture caches
+    // recycle a small pool of D3D9 textures and stream different guest textures
+    // through them, so holding the first content's hash makes materials swap
+    // between surfaces. rtx.rehashTextureOnUpload re-derives the hash from the
+    // new content on every full upload. Both callers of this function
+    // (d3d9_device.cpp UpdateTexture / the full-extent buffer upload) already
+    // run per upload, so only this early-out needs to yield.
+    const bool alreadySetUp = m_image->getHash() != 0;
+    if (alreadySetUp && !RtxOptions::rehashTextureOnUpload()) {
       return;
     }
+
+    const XXH64_hash_t previousHash = m_image->getHash();
 
     // Use subresource 0 for hashing
     constexpr uint32_t subresource = 0;
@@ -674,14 +726,41 @@ namespace dxvk {
     const bool useObsoleteHashMethod = NeedsUpload(subresource) &&
       RtxOptions::useObsoleteHashOnTextureUpload();
 
+    // Hash the slice that is actually about to be uploaded, not the buffer's
+    // original base allocation. D3DUSAGE_DYNAMIC textures locked with
+    // D3DLOCK_DISCARD are renamed - DiscardMapSlice() allocates a fresh slice
+    // and records it in m_mappedSlices - so after the first discard the live
+    // pixels no longer live at mapPtr(0). FlushImage() already reads
+    // GetMappedSlice() for the upload itself; hashing the base instead meant
+    // the identity was derived from stale memory, which collapses many
+    // different textures onto the same hash. Games that upload once are
+    // unaffected: their mapped slice IS the base slice.
+    const DxvkBufferSliceHandle mappedSlice = source->GetMappedSlice(subresource);
+    const void* hashSrc = mappedSlice.mapPtr != nullptr ? mappedSlice.mapPtr : buffer->mapPtr(0);
+    const size_t hashSize = mappedSlice.mapPtr != nullptr && mappedSlice.length != 0
+      ? static_cast<size_t>(mappedSlice.length)
+      : static_cast<size_t>(buffer->info().size);
+
     // Generate hash from CPU buffer
     XXH64_hash_t imageHash;
 
     if (unlikely(useObsoleteHashMethod)) {
-      imageHash = XXH64(buffer->mapPtr(0), buffer->info().size, 0);
+      imageHash = XXH64(hashSrc, hashSize, 0);
     } else {
-      imageHash = XXH3_64bits(buffer->mapPtr(0), buffer->info().size);
+      imageHash = XXH3_64bits(hashSrc, hashSize);
     }
+    // Re-upload of identical content: the identity is unchanged, so there is
+    // nothing to re-register.
+    if (alreadySetUp && imageHash == previousHash) {
+      return;
+    }
+
+    // The texture object is being reused for different content. Drop the stale
+    // entry so the texture browser doesn't accumulate dead hashes.
+    if (alreadySetUp && previousHash != kEmptyHash) {
+      ImGUI::ReleaseTexture(previousHash);
+    }
+
     // save hash to dxvkImage
     m_image->setHash(imageHash);
 
