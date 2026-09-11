@@ -5,6 +5,10 @@ on:
     branches: [ main, 'release/**' ]
   pull_request:
     branches: [ main, 'release/**' ]
+  # Added so the Actions UI "Run workflow" button and `gh workflow run` work on this
+  # fork. GitHub only exposes manual dispatch for workflows that declare it on the
+  # DEFAULT branch, even when the branch being dispatched already declares it.
+  workflow_dispatch:
 
 jobs:
   build-windows:
